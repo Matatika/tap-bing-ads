@@ -44,7 +44,8 @@ TOP_LEVEL_CORE_OBJECTS = [
     'AdvertiserAccount',
     'Campaign',
     'AdGroup',
-    'Ad'
+    'Ad',
+    'Keyword',
 ]
 
 CONFIG = {}
@@ -452,6 +453,10 @@ def discover_core_objects():
     ad_schema = get_core_schema(client, 'Ad')
     core_object_streams.append(get_stream_def('ads', ad_schema, pks=['Id']))
 
+    # Load Keyword's schemas
+    keyword_schema = get_core_schema(client, 'Keyword')
+    core_object_streams.append(get_stream_def('keywords', keyword_schema, pks=['Id']))
+
     return core_object_streams
 
 @bing_ads_error_handling
@@ -733,6 +738,22 @@ def sync_ads(client, selected_streams, ad_group_ids):
                 singer.write_records('ads', filter_selected_fields_many(selected_fields, ads))
                 counter.increment(len(ads))
 
+@bing_ads_error_handling
+def sync_keywords(client, selected_streams, ad_group_ids):
+    schema = get_core_schema(client, 'Keyword')
+    selected_fields = get_selected_fields(selected_streams['keywords'])
+
+    for ad_group_id in ad_group_ids:
+        response = client.GetKeywordsByAdGroupId(AdGroupId=ad_group_id)
+        response_dict = sobject_to_dict(response)
+
+        if 'Keyword' in response_dict:
+            singer.write_schema('keywords', schema, ['Id'])
+            with metrics.record_counter('keywords') as counter:
+                keywords = response_dict['Keyword']
+                singer.write_records('keywords', filter_selected_fields_many(selected_fields, keywords))
+                counter.increment(len(keywords))
+
 def sync_core_objects(account_id, selected_streams):
     client = create_sdk_client('CampaignManagementService', account_id)
 
@@ -744,6 +765,9 @@ def sync_core_objects(account_id, selected_streams):
         if 'ads' in selected_streams:
             LOGGER.info('Syncing Ads for Account: %s', account_id)
             sync_ads(client, selected_streams, ad_group_ids)
+        if 'keywords' in selected_streams:
+            LOGGER.info('Syncing Keywords for Account: %s', account_id)
+            sync_keywords(client, selected_streams, ad_group_ids)
 
 def type_report_row(row):
     # Check and convert report's field to valid type
