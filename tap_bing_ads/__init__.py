@@ -6,7 +6,7 @@ import csv
 import sys
 import re
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from zipfile import ZipFile
 
 import socket
@@ -152,12 +152,60 @@ class CustomServiceClient(ServiceClient):
         kwargs['timeout'] = get_request_timeout()
         self._soap_client.set_options(**kwargs)
 
+
+class OAuthProxyAuthGrant:
+    """Simple auth grant which retrieves an access token from a proxy endpoint."""
+
+    def __init__(self, auth_endpoint, auth_headers=None, auth_body=None):
+        self.auth_endpoint = auth_endpoint
+        self._auth_headers = auth_headers or {}
+        self._auth_body = auth_body or {}
+        self.logger = LOGGER
+        self.access_token = None
+        self.expires_in = None
+        self.last_refreshed = None
+
+    def request_oauth_tokens(self):
+        request_time = datetime.now(timezone.utc)
+        token_response = requests.post(
+            self.auth_endpoint,
+            headers=self._auth_headers,
+            data=json.dumps(self._auth_body),
+        )
+        try:
+            token_response.raise_for_status()
+            self.logger.info("OAuth authorization attempt was successful.")
+        except Exception as ex:
+            raise RuntimeError(
+                f"Failed OAuth login, response was '{token_response.json()}'. {ex}"
+            )
+        token_json = token_response.json()
+        self.access_token = token_json["access_token"]
+        self.expires_in = token_json["expires_in"]
+        self.last_refreshed = request_time
+        return self
+
 def get_authentication():
     """
     Authenticate using the new method (no scope specified) and
     fall back to the legacy method using the bingads.manage scope if
     that fails.
     """
+    oauth_credentials = CONFIG.get('oauth_credentials', {})
+    refresh_proxy_url = oauth_credentials.get('refresh_proxy_url')
+    if refresh_proxy_url:
+        headers = {}
+        if oauth_credentials.get('refresh_proxy_url_auth'):
+            headers['Authorization'] = oauth_credentials['refresh_proxy_url_auth']
+        body = {}
+        refresh_token = oauth_credentials.get('refresh_token', CONFIG.get('refresh_token'))
+        if refresh_token:
+            body['refresh_token'] = refresh_token
+
+        authentication = OAuthProxyAuthGrant(refresh_proxy_url, headers, body)
+        authentication.request_oauth_tokens()
+        return authentication
+
     # Represents an OAuth authorization object implementing the authorization code grant flow for use in a web application.
     try:
         authentication = OAuthWebAuthCodeGrant(
