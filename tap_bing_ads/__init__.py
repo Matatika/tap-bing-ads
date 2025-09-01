@@ -611,7 +611,12 @@ def get_selected_fields(catalog_item, exclude=None):
 
     if not exclude:
         exclude = []
-
+    
+    if CONFIG.get('report_fields'):
+        fields_override = CONFIG["report_fields"].get(catalog_item.stream, [])
+        if fields_override:
+            return [f for f in fields_override if f not in exclude]
+        
     mdata = metadata.to_map(catalog_item.metadata)
     selected_fields = []
     invalid_selections = {}
