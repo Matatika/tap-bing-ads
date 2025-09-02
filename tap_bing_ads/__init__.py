@@ -184,7 +184,7 @@ def get_authentication():
         return authentication
 
 @bing_ads_error_handling
-def create_sdk_client(service, account_id):
+def create_sdk_client(service, account_id=None):
     # Creates SOAP client with OAuth refresh credentials for services
     LOGGER.info('Creating SOAP client with OAuth refresh credentials for service: %s, account_id %s',
                 service, account_id)
@@ -443,6 +443,8 @@ def discover_core_objects():
         # Hence we are keeping ID only in pks.
         get_stream_def('accounts', account_schema, pks=['Id'], replication_keys=['LastModifiedTime']))
 
+    account_info_schema = get_core_schema(client, 'AccountInfo')
+    core_object_streams.append(get_stream_def('accounts_info', account_info_schema, pks=['Id']))
     LOGGER.info('Initializing CampaignManagementService client - Loading WSDL')
     client = CustomServiceClient('CampaignManagementService')
 
@@ -620,12 +622,6 @@ def get_selected_fields(catalog_item, exclude=None):
 
     if not exclude:
         exclude = []
-
-    reports_config = CONFIG.get("reports", {})
-    stream_config = reports_config.get(catalog_item.stream, {})
-    fields_override = stream_config.get("report_fields", [])
-    if fields_override:
-        return [f for f in fields_override if f not in exclude]
         
     mdata = metadata.to_map(catalog_item.metadata)
     selected_fields = []
@@ -677,7 +673,10 @@ def sync_accounts_stream(account_ids, catalog_item):
             filter(lambda x: x is not None and x['LastModifiedTime'] >= accounts_bookmark,
                    accounts))
 
-    max_accounts_last_modified = max([x['LastModifiedTime'] for x in accounts])
+    if accounts:
+        max_accounts_last_modified = max(x['LastModifiedTime'] for x in accounts)
+    else:
+        max_accounts_last_modified = accounts_bookmark
 
     with metrics.record_counter('accounts') as counter:
         # Write only selected fields
@@ -686,6 +685,22 @@ def sync_accounts_stream(account_ids, catalog_item):
 
     singer.write_bookmark(STATE, 'accounts', 'last_record', max_accounts_last_modified)
     singer.write_state(STATE)
+
+@bing_ads_error_handling
+def sync_accounts_info():
+    # Get accounts info for the supplied credentials
+    LOGGER.info('Initializing CustomerManagementService client - Loading WSDL')
+    schema_client = CustomServiceClient('CustomerManagementService')
+    account_schema = get_core_schema(schema_client, 'AccountInfo')
+    singer.write_schema('accounts_info', account_schema, ['Id'])
+    api_client = create_sdk_client('CustomerManagementService')
+    response = api_client.GetAccountsInfo()
+    account_list = response.AccountInfo
+    for acct in account_list:
+        acct_dict = sobject_to_dict(acct)
+        singer.write_record('accounts_info', acct_dict)
+
+
 
 @bing_ads_error_handling
 def sync_core_objects(account_id, selected_streams):
@@ -1147,6 +1162,10 @@ async def do_sync_all_accounts(account_ids, catalog):
     if 'accounts' in selected_streams:
         LOGGER.info('Syncing Accounts')
         sync_accounts_stream(account_ids, selected_streams['accounts'])
+    
+    if 'accounts_info' in selected_streams:
+        LOGGER.info('Syncing Accounts Info')
+        sync_accounts_info()
 
     sync_account_data_tasks = [
         sync_account_data(account_id, catalog, selected_streams)
@@ -1154,13 +1173,20 @@ async def do_sync_all_accounts(account_ids, catalog):
     ]
     await asyncio.gather(*sync_account_data_tasks)
 
+def get_account_ids():
+    api_client = create_sdk_client('CustomerManagementService')
+    response = api_client.GetAccountsInfo()
+
+    account_list = response.AccountInfo if hasattr(response, "AccountInfo") else []
+    account_ids = [acct.Id for acct in account_list]
+    return account_ids
+
 async def main_impl():
     args = utils.parse_args(REQUIRED_CONFIG_KEYS)
 
     CONFIG.update(args.config)
     STATE.update(args.state)
-    account_ids = CONFIG['account_ids'].split(",")
-
+    account_ids = get_account_ids()
     if args.discover: # Discover mode
         do_discover(account_ids)
         LOGGER.info("Discovery complete")
