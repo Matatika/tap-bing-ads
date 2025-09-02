@@ -553,6 +553,7 @@ def discover_reports():
     client = CustomServiceClient('ReportingService')
     type_map = get_type_map(client)
     report_column_regex = r'^(?!ArrayOf)(.+Report)Column$'
+    reports_config = CONFIG.get("reports", {})
 
     for type_name in type_map:
         match = re.match(report_column_regex, type_name)
@@ -561,10 +562,13 @@ def discover_reports():
             stream_name = snakecase(report_name)
             report_schema = get_report_schema(client, report_name)
             report_metadata = get_report_metadata(report_name, report_schema)
+            stream_config = reports_config.get(stream_name, {})
+            primary_keys = stream_config.get("primary_keys",None)
             report_stream_def = get_stream_def(
                 stream_name,
                 report_schema,
-                stream_metadata=report_metadata)
+                stream_metadata=report_metadata,
+                pks=primary_keys)
             report_streams.append(report_stream_def)
 
     return report_streams
@@ -611,11 +615,12 @@ def get_selected_fields(catalog_item, exclude=None):
 
     if not exclude:
         exclude = []
-    
-    if CONFIG.get('report_fields'):
-        fields_override = CONFIG["report_fields"].get(catalog_item.stream, [])
-        if fields_override:
-            return [f for f in fields_override if f not in exclude]
+
+    reports_config = CONFIG.get("reports", {})
+    stream_config = reports_config.get(catalog_item.stream, {})
+    fields_override = stream_config.get("report_fields", [])
+    if fields_override:
+        return [f for f in fields_override if f not in exclude]
         
     mdata = metadata.to_map(catalog_item.metadata)
     selected_fields = []
@@ -936,9 +941,12 @@ async def sync_report_interval(client, account_id, report_stream,
                                start_date, end_date):
     state_key = '{}_{}'.format(account_id, report_stream.stream)
     report_name = pascalcase(report_stream.stream)
+    reports_config = CONFIG.get("reports", {})
+    stream_config = reports_config.get(report_stream.stream, {})
+    primary_keys = stream_config.get("primary_keys", None)
 
     report_schema = get_report_schema(client, report_name)
-    singer.write_schema(report_stream.stream, report_schema, [])
+    singer.write_schema(report_stream.stream, report_schema, primary_keys)
 
     report_time = arrow.get().isoformat()
 
