@@ -688,7 +688,7 @@ def sync_accounts_stream(account_ids, catalog_item):
     singer.write_state(STATE)
 
 @bing_ads_error_handling
-def sync_core_objects(account_id, selected_streams, bulk=True):
+def sync_core_objects(account_id, selected_streams):
     LOGGER.info("Syncing core objects for Account: %s", account_id)
 
     client = create_sdk_client("BulkService", account_id)
