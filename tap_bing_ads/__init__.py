@@ -6,6 +6,7 @@ import csv
 import sys
 import re
 import io
+import time
 from datetime import datetime
 from zipfile import ZipFile
 
@@ -50,6 +51,10 @@ TOP_LEVEL_CORE_OBJECTS = [
 
 CONFIG = {}
 STATE = {}
+
+# ~5 minute polling timeout
+MAX_NUM_BULK_POLLS = 150
+BULK_POLL_SLEEP = 2
 
 # ~2 hour polling timeout
 MAX_NUM_REPORT_POLLS = 1440
@@ -683,118 +688,151 @@ def sync_accounts_stream(account_ids, catalog_item):
     singer.write_state(STATE)
 
 @bing_ads_error_handling
-def sync_campaigns(client, account_id, selected_streams): # pylint: disable=inconsistent-return-statements
-    # CampaignType defaults to 'Search', but there are other types of campaigns
-    response = client.GetCampaignsByAccountId(AccountId=account_id, CampaignType='Search Shopping DynamicSearchAds')
-    response_dict = sobject_to_dict(response)
-    if 'Campaign' in response_dict:
-        campaigns = response_dict['Campaign']
+def sync_core_objects(account_id, selected_streams, bulk=True):
+    LOGGER.info("Syncing core objects for Account: %s", account_id)
 
-        if 'campaigns' in selected_streams:
-            selected_fields = get_selected_fields(selected_streams['campaigns'])
-            singer.write_schema('campaigns', get_core_schema(client, 'Campaign'), ['Id'])
-            with metrics.record_counter('campaigns') as counter:
-                singer.write_records('campaigns',
-                                     filter_selected_fields_many(selected_fields, campaigns))
-                counter.increment(len(campaigns))
+    client = create_sdk_client("BulkService", account_id)
 
-        return map(lambda x: x['Id'], campaigns)
+    AccountIds = client.factory.create(
+        r"{http://schemas.microsoft.com/2003/10/Serialization/Arrays}ArrayOflong"
+    )
+    AccountIds.long = [account_id]
 
-@bing_ads_error_handling
-def sync_ad_groups(client, account_id, campaign_ids, selected_streams):
-    ad_group_ids = []
-    for campaign_id in campaign_ids:
-        response = client.GetAdGroupsByCampaignId(CampaignId=campaign_id)
-        response_dict = sobject_to_dict(response)
+    DownloadEntities = client.factory.create(
+        r"{https://bingads.microsoft.com/CampaignManagement/v13}ArrayOfDownloadEntity"
+    )
+    DownloadEntities.DownloadEntity = [
+        e
+        for e in ["Campaigns", "AdGroups", "Ads", "Keywords"]
+        if snakecase(e) in selected_streams
+    ]
 
-        if 'AdGroup' in response_dict:
-            ad_groups = sobject_to_dict(response)['AdGroup']
+    DownloadRequestId = client.DownloadCampaignsByAccountIds(
+        AccountIds=AccountIds,
+        DownloadEntities=DownloadEntities,
+        FormatVersion="6.0",
+    )
 
-            if 'ad_groups' in selected_streams:
-                LOGGER.info('Syncing AdGroups for Account: %s, Campaign: %s',
-                    account_id, campaign_id)
-                selected_fields = get_selected_fields(selected_streams['ad_groups'])
-                singer.write_schema('ad_groups', get_core_schema(client, 'AdGroup'), ['Id'])
-                with metrics.record_counter('ad_groups') as counter:
-                    singer.write_records('ad_groups',
-                                         filter_selected_fields_many(selected_fields, ad_groups))
-                    counter.increment(len(ad_groups))
+    attempts = 0
 
-            ad_group_ids += list(map(lambda x: x['Id'], ad_groups))
-    return ad_group_ids
+    while True:
+        response = client.GetBulkDownloadStatus(DownloadRequestId)
+        attempts += 1
 
-@bing_ads_error_handling
-def sync_ads(client, selected_streams, ad_group_ids):
-    for ad_group_id in ad_group_ids:
-        response = client.GetAdsByAdGroupId(
-            AdGroupId=ad_group_id,
-            AdTypes={
-                'AdType': [
-                    'AppInstall',
-                    'DynamicSearch',
-                    'ExpandedText',
-                    'Product',
-                    'Text',
-                    'Image'
-                ]
-            })
-        response_dict = sobject_to_dict(response)
+        status = sobject_to_dict(response)
 
-        if 'Ad' in response_dict:
-            selected_fields = get_selected_fields(selected_streams['ads'])
-            singer.write_schema('ads', get_core_schema(client, 'Ad'), ['Id'])
-            with metrics.record_counter('ads') as counter:
-                ads = response_dict['Ad']
-                singer.write_records('ads', filter_selected_fields_many(selected_fields, ads))
-                counter.increment(len(ads))
+        RequestStatus = status["RequestStatus"]
 
-@bing_ads_error_handling
-def sync_keywords(client, selected_streams, ad_group_ids):
-    schema = get_core_schema(client, 'Keyword')
-    selected_fields = get_selected_fields(selected_streams['keywords'])
+        LOGGER.info(
+            "Download %d%% completed (%s)", status["PercentComplete"], RequestStatus
+        )
 
-    for ad_group_id in ad_group_ids:
-        response = client.GetKeywordsByAdGroupId(AdGroupId=ad_group_id)
-        response_dict = sobject_to_dict(response)
+        if RequestStatus == "InProgress":
+            if attempts > MAX_NUM_BULK_POLLS:
+                raise RuntimeError(
+                    "Download incomplete (%s) after checking %d time(s)",
+                    RequestStatus,
+                    attempts,
+                )
 
-        if 'Keyword' in response_dict:
-            singer.write_schema('keywords', schema, ['Id'])
-            with metrics.record_counter('keywords') as counter:
-                keywords = response_dict['Keyword']
-                singer.write_records('keywords', filter_selected_fields_many(selected_fields, keywords))
-                counter.increment(len(keywords))
+            time.sleep(BULK_POLL_SLEEP)
+            continue
 
-def sync_core_objects(account_id, selected_streams):
-    client = create_sdk_client('CampaignManagementService', account_id)
+        elif RequestStatus == "Completed":
+            break
 
-    LOGGER.info('Syncing Campaigns for Account: %s', account_id)
-    campaign_ids = sync_campaigns(client, account_id, selected_streams)
+        raise RuntimeError("Download failed (%s): %s", RequestStatus, status["Errors"])
 
-    if campaign_ids and ('ad_groups' in selected_streams or 'ads' in selected_streams):
-        ad_group_ids = sync_ad_groups(client, account_id, campaign_ids, selected_streams)
-        if 'ads' in selected_streams:
-            LOGGER.info('Syncing Ads for Account: %s', account_id)
-            sync_ads(client, selected_streams, ad_group_ids)
-        if 'keywords' in selected_streams:
-            LOGGER.info('Syncing Keywords for Account: %s', account_id)
-            sync_keywords(client, selected_streams, ad_group_ids)
+    response = requests.get(status["ResultFileUrl"])
+    response.raise_for_status()
+
+    with (
+        ZipFile(io.BytesIO(response.content)) as zip_file,
+        zip_file.open(zip_file.namelist()[0]) as binary_file,
+        io.TextIOWrapper(binary_file, encoding="utf-8-sig") as csv_file,
+    ):
+        LOGGER.info("Processing file '%s' for account: %s", csv_file.name, account_id)
+
+        reader = csv.DictReader(csv_file)
+        reader.fieldnames = [name.replace(" ", "") for name in reader.fieldnames]
+
+        tap_stream_id = None
+        record_counts = {}
+
+        for i, row in enumerate(reader, start=2):
+            type_ = row.pop("Type")
+            entity_name = (
+                "Ads" if type_.endswith(" Ad") else type_.replace(" ", "") + "s"
+            )
+
+            if entity_name not in DownloadEntities.DownloadEntity:
+                continue
+
+            next_tap_stream_id = snakecase(entity_name)
+
+            if tap_stream_id != next_tap_stream_id:
+                if next_tap_stream_id not in selected_streams:
+                    LOGGER.debug(
+                        "Ignoring records for deselected stream '%s' from line: %d",
+                        tap_stream_id,
+                        i,
+                    )
+                    continue
+
+                tap_stream_id = next_tap_stream_id
+
+                LOGGER.info(
+                    "Processing records for stream '%s' from line: %d", tap_stream_id, i
+                )
+
+                catalog_entry = selected_streams[tap_stream_id]
+                selected_fields = get_selected_fields(catalog_entry)
+                field_types = {
+                    k: v.type and v.type[-1]
+                    for k, v in catalog_entry.schema.properties.items()
+                    if k in selected_fields
+                }
+
+                singer.write_schema(
+                    tap_stream_id,
+                    catalog_entry.schema.to_dict(),
+                    ["Id"],
+                )
+
+                record_counts.setdefault(tap_stream_id, 0)
+
+            row = filter_selected_fields(selected_fields, row)
+            type_row(row, field_types)
+
+            singer.write_record(tap_stream_id, row)
+
+            record_counts[tap_stream_id] += 1
+
+        for tap_stream_id, count in record_counts.items():
+            with metrics.record_counter(tap_stream_id) as counter:
+                counter.increment(count)
+
 
 def type_report_row(row):
     # Check and convert report's field to valid type
+    type_row(row, reports.REPORTING_FIELD_TYPES)
+
+
+def type_row(row, field_types):
     for field_name, value in row.items():
         value = value.strip()
         if value == '':
             value = None
 
-        if value is not None and field_name in reports.REPORTING_FIELD_TYPES:
-            _type = reports.REPORTING_FIELD_TYPES[field_name]
+        if value is not None and field_name in field_types:
+            _type = field_types[field_name]
             if _type == 'integer':
-                if value == '--':
+                if value in ["--", "All"]:
                     value = 0
                 else:
                     value = int(value.replace(',', ''))
             elif _type == 'number':
-                if value == '--':
+                if value in ["--", "All"]:
                     value = 0.0
                 else:
                     value = float(value.replace('%', '').replace(',', ''))
