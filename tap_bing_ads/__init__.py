@@ -732,7 +732,7 @@ def sync_core_objects(account_id, selected_streams):
     attempts = 0
 
     while True:
-        response = client.GetBulkDownloadStatus(DownloadRequestId)
+        response = client.GetBulkDownloadStatus(RequestId=DownloadRequestId)
         attempts += 1
 
         status = sobject_to_dict(response)
