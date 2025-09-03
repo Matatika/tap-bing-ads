@@ -571,7 +571,7 @@ def discover_reports():
             report_schema = get_report_schema(client, report_name)
             report_metadata = get_report_metadata(report_name, report_schema)
             stream_config = reports_config.get(stream_name, {})
-            primary_keys = stream_config.get("primary_keys",None)
+            primary_keys = stream_config.get("primary_keys", [])
             report_stream_def = get_stream_def(
                 stream_name,
                 report_schema,
@@ -992,7 +992,7 @@ async def sync_report_interval(client, account_id, report_stream,
     report_name = pascalcase(report_stream.stream)
     reports_config = CONFIG.get("reports", {})
     stream_config = reports_config.get(report_stream.stream, {})
-    primary_keys = stream_config.get("primary_keys", None)
+    primary_keys = stream_config.get("primary_keys", [])
 
     report_schema = get_report_schema(client, report_name)
     singer.write_schema(report_stream.stream, report_schema, primary_keys)
