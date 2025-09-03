@@ -37,7 +37,6 @@ REQUEST_TIMEOUT = 300
 REQUIRED_CONFIG_KEYS = [
     "start_date",
     "customer_id",
-    "account_ids",
     "oauth_client_id",
     "oauth_client_secret",
     "refresh_token",
