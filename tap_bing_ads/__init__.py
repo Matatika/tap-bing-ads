@@ -9,6 +9,7 @@ import io
 import time
 from datetime import datetime
 from zipfile import ZipFile
+from functools import lru_cache
 
 import socket
 import ssl
@@ -199,6 +200,11 @@ def create_sdk_client(service, account_id=None):
         authentication=authentication)
 
     return CustomServiceClient(service, authorization_data=authorization_data)
+
+@lru_cache
+def customer_management_service_client(account_id=None):
+    LOGGER.info('Initializing CustomerManagementService client - Loading WSDL')
+    return create_sdk_client("CustomerManagementService", account_id)
 
 def sobject_to_dict(obj):
     # Convert response of soap to dictionary
@@ -431,8 +437,7 @@ def get_core_schema(client, obj):
 def discover_core_objects():
     core_object_streams = []
 
-    LOGGER.info('Initializing CustomerManagementService client - Loading WSDL')
-    client = CustomServiceClient('CustomerManagementService')
+    client = customer_management_service_client()
 
     # Load Account's schemas
     account_schema = get_core_schema(client, 'AdvertiserAccount')
@@ -584,7 +589,7 @@ def test_credentials(account_ids):
     if not account_ids:
         raise Exception('At least one id in account_ids is required to test authentication')
 
-    create_sdk_client('CustomerManagementService', account_ids[0]) # Create bingads sdk client
+    customer_management_service_client(account_ids[0]) # Create bingads sdk client
 
 def do_discover(account_ids):
     # Discover schemas and dump in STDOUT
@@ -655,8 +660,7 @@ def sync_accounts_stream(account_ids, catalog_item):
     selected_fields = get_selected_fields(catalog_item)
     accounts = []
 
-    LOGGER.info('Initializing CustomerManagementService client - Loading WSDL')
-    client = create_sdk_client('CustomerManagementService')
+    client = customer_management_service_client()
     account_schema = get_core_schema(client, 'AdvertiserAccount')
     singer.write_schema('accounts', account_schema, ['Id'])
 
@@ -688,12 +692,10 @@ def sync_accounts_stream(account_ids, catalog_item):
 @bing_ads_error_handling
 def sync_accounts_info():
     # Get accounts info for the supplied credentials
-    LOGGER.info('Initializing CustomerManagementService client - Loading WSDL')
-    schema_client = CustomServiceClient('CustomerManagementService')
-    account_schema = get_core_schema(schema_client, 'AccountInfo')
+    client = customer_management_service_client()
+    account_schema = get_core_schema(client, 'AccountInfo')
     singer.write_schema('accounts_info', account_schema, ['Id'])
-    api_client = create_sdk_client('CustomerManagementService')
-    response = api_client.GetAccountsInfo()
+    response = client.GetAccountsInfo()
     account_list = response.AccountInfo
     for acct in account_list:
         acct_dict = sobject_to_dict(acct)
@@ -1173,8 +1175,8 @@ async def do_sync_all_accounts(account_ids, catalog):
     await asyncio.gather(*sync_account_data_tasks)
 
 def get_account_ids():
-    api_client = create_sdk_client('CustomerManagementService')
-    response = api_client.GetAccountsInfo()
+    client = customer_management_service_client()
+    response = client.GetAccountsInfo()
 
     account_list = response.AccountInfo if hasattr(response, "AccountInfo") else []
     account_ids = [acct.Id for acct in account_list]
