@@ -7,9 +7,12 @@ import sys
 import re
 import io
 import time
+import glob
 from datetime import datetime
 from zipfile import ZipFile
 from functools import lru_cache
+from pathlib import Path
+from importlib import resources
 
 import socket
 import ssl
@@ -450,24 +453,17 @@ def discover_core_objects():
 
     account_info_schema = get_core_schema(client, 'AccountInfo')
     core_object_streams.append(get_stream_def('accounts_info', account_info_schema, pks=['Id']))
-    LOGGER.info('Initializing CampaignManagementService client - Loading WSDL')
-    client = CustomServiceClient('CampaignManagementService')
 
-    # Load Campaign's schemas
-    campaign_schema = get_core_schema(client, 'Campaign')
-    core_object_streams.append(get_stream_def('campaigns', campaign_schema, pks=['Id']))
+    schemas_dir = resources.files(__package__) / "schemas"
+    for filepath in glob.glob(str(schemas_dir / "*.json")):
+        filepath = Path(filepath)
+        stream_name = filepath.stem
 
-    # Load AdGroup's schemas
-    ad_group_schema = get_core_schema(client, 'AdGroup')
-    core_object_streams.append(get_stream_def('ad_groups', ad_group_schema, pks=['Id']))
+        if not stream_name.endswith("s"):
+            stream_name += "s"
 
-    # Load Ad's schemas
-    ad_schema = get_core_schema(client, 'Ad')
-    core_object_streams.append(get_stream_def('ads', ad_schema, pks=['Id']))
-
-    # Load Keyword's schemas
-    keyword_schema = get_core_schema(client, 'Keyword')
-    core_object_streams.append(get_stream_def('keywords', keyword_schema, pks=['Id']))
+        schema = json.loads(filepath.read_text())
+        core_object_streams.append(get_stream_def(stream_name, schema, pks=["Id"]))
 
     return core_object_streams
 
@@ -770,13 +766,12 @@ def sync_core_objects(account_id, selected_streams):
         LOGGER.info("Processing file '%s' for account: %s", csv_file.name, account_id)
 
         reader = csv.DictReader(csv_file)
-        reader.fieldnames = [name.replace(" ", "") for name in reader.fieldnames]
 
         tap_stream_id = None
         record_counts = {}
 
         for i, row in enumerate(reader, start=2):
-            type_ = row.pop("Type")
+            type_ = row["Type"]
             entity_name = (
                 "Ads" if type_.endswith(" Ad") else type_.replace(" ", "") + "s"
             )
