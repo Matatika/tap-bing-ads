@@ -656,13 +656,12 @@ def sync_accounts_stream(account_ids, catalog_item):
     accounts = []
 
     LOGGER.info('Initializing CustomerManagementService client - Loading WSDL')
-    client = CustomServiceClient('CustomerManagementService')
+    client = create_sdk_client('CustomerManagementService')
     account_schema = get_core_schema(client, 'AdvertiserAccount')
     singer.write_schema('accounts', account_schema, ['Id'])
 
+    # Loop over the multiple account_ids
     for account_id in account_ids:
-        # Loop over the multiple account_ids
-        client = create_sdk_client('CustomerManagementService', account_id)
         # Get account data
         response = client.GetAccount(AccountId=account_id)
         accounts.append(sobject_to_dict(response))
@@ -982,7 +981,7 @@ async def sync_report(client, account_id, report_stream):
                                                  report_stream,
                                                  current_start_date,
                                                  current_end_date)
-        except InvalidDateRangeEnd as ex: # pylint: disable=unused-variable
+        except InvalidDateRangeEnd: # pylint: disable=unused-variable
             LOGGER.warn("Bing reported that the requested report date range ended outside of "
                         "their data retention period. Skipping to next range...")
             success = True
@@ -1016,7 +1015,7 @@ async def sync_report_interval(client, account_id, report_stream,
         success, download_url = await poll_report(client, account_id, report_name,
                                                   start_date, end_date, request_id)
 
-    except Exception as some_error: # pylint: disable=broad-except,unused-variable
+    except Exception: # pylint: disable=broad-except,unused-variable
         LOGGER.info('The request_id %s for %s is invalid, generating a new one',
                     request_id,
                     state_key)
