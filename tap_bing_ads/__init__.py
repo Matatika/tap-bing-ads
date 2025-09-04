@@ -1181,7 +1181,10 @@ async def main_impl():
 
     CONFIG.update(args.config)
     STATE.update(args.state)
-    account_ids = get_account_ids()
+
+    config_account_ids: str = CONFIG.get("account_ids")
+    account_ids = config_account_ids.split(",") if config_account_ids else get_account_ids()
+
     if args.discover: # Discover mode
         do_discover(account_ids)
         LOGGER.info("Discovery complete")
