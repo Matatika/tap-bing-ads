@@ -30,6 +30,7 @@ import backoff
 
 from tap_bing_ads import reports
 from tap_bing_ads.exclusions import EXCLUSIONS
+from tap_bing_ads.cache import IN_MEMORY_OBJECT_CACHE
 
 LOGGER = singer.get_logger()
 REQUEST_TIMEOUT = 300
@@ -144,7 +145,7 @@ class CustomServiceClient(ServiceClient):
     @bing_ads_error_handling
     def __init__(self, name, **kwargs):
         # Initializes a new instance of this ServiceClient class.
-        return super().__init__(name, 'v13', **kwargs)
+        return super().__init__(name, 'v13', cache=IN_MEMORY_OBJECT_CACHE, **kwargs)
 
     def __getattr__(self, name):
         # Log and return service call(suds client call) object
