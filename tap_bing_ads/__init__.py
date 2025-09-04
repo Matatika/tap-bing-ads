@@ -30,7 +30,6 @@ import backoff
 
 from tap_bing_ads import reports
 from tap_bing_ads.exclusions import EXCLUSIONS
-from tap_bing_ads.cache import IN_MEMORY_OBJECT_CACHE
 
 LOGGER = singer.get_logger()
 REQUEST_TIMEOUT = 300
@@ -145,7 +144,7 @@ class CustomServiceClient(ServiceClient):
     @bing_ads_error_handling
     def __init__(self, name, **kwargs):
         # Initializes a new instance of this ServiceClient class.
-        return super().__init__(name, 'v13', cache=IN_MEMORY_OBJECT_CACHE, **kwargs)
+        return super().__init__(name, 'v13', **kwargs)
 
     def __getattr__(self, name):
         # Log and return service call(suds client call) object
@@ -161,6 +160,9 @@ class CustomServiceClient(ServiceClient):
         # setting the timeout parameter using the set_options which sets timeout in the _soap_client
         kwargs['timeout'] = get_request_timeout()
         self._soap_client.set_options(**kwargs)
+
+    def set_account(self, account_id):
+        self._authorization_data = get_authorization_data(account_id)
 
 def get_authentication():
     """
@@ -187,27 +189,37 @@ def get_authentication():
         authentication.request_oauth_tokens_by_refresh_token(CONFIG['refresh_token'])
         return authentication
 
-@bing_ads_error_handling
-def create_sdk_client(service, account_id=None):
-    # Creates SOAP client with OAuth refresh credentials for services
-    LOGGER.info('Creating SOAP client with OAuth refresh credentials for service: %s, account_id %s',
-                service, account_id)
-
+def get_authorization_data(account_id=None):
     authentication = get_authentication()
 
     # Instance require to authenticate with Bing Ads
-    authorization_data = AuthorizationData(
+    return AuthorizationData(
         account_id=account_id,
-        customer_id=CONFIG['customer_id'],
-        developer_token=CONFIG['developer_token'],
-        authentication=authentication)
+        customer_id=CONFIG["customer_id"],
+        developer_token=CONFIG["developer_token"],
+        authentication=authentication,
+    )
 
-    return CustomServiceClient(service, authorization_data=authorization_data)
+@bing_ads_error_handling
+def create_sdk_client(service, account_id=None):
+    # Creates SOAP client with OAuth refresh credentials for services
+    LOGGER.info(
+        "Creating SOAP client with OAuth refresh credentials for service: %s, account_id %s",
+        service,
+        account_id,
+    )
+
+    return CustomServiceClient(service, authorization_data=get_authorization_data(account_id))
 
 @lru_cache
 def customer_management_service_client(account_id=None):
     LOGGER.info('Initializing CustomerManagementService client - Loading WSDL')
     return create_sdk_client("CustomerManagementService", account_id)
+
+@lru_cache
+def reporting_service_client(account_id=None):
+    LOGGER.info("Initializing ReportingService client - Loading WSDL")
+    return create_sdk_client("ReportingService", account_id)
 
 def sobject_to_dict(obj):
     # Convert response of soap to dictionary
@@ -1120,7 +1132,8 @@ def build_report_request(client, account_id, report_stream, report_name,
 
 async def sync_reports(account_id, catalog):
     # Sync report stream
-    client = create_sdk_client('ReportingService', account_id)
+    client = reporting_service_client()
+    client.set_account(account_id)
 
     reports_to_sync = filter(lambda x: x.is_selected() and x.stream[-6:] == 'report',
                              catalog.streams)
